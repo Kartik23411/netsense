@@ -1,8 +1,16 @@
 class IPv4Analyzer:
     # IP Protocols
-    PROTO_ICMP = 1
-    PROTO_TCP = 6
-    PROTO_UDP = 17
+    PROTOCOLS = {
+        1: "ICMP",
+        6: "TCP",
+        17: "UDP",
+        41: "IPv6-in-IPv4",
+        47: "GRE",
+        50: "ESP",
+        51: "AH",
+        89: "OSPF",
+        132: "SCTP",
+    }
     
     # Flags
     FLAG_RESERVED = 0x4
@@ -12,11 +20,11 @@ class IPv4Analyzer:
     def __init__(self):
         self.fragment_tracker = {}  # for tracking the fragmented packets
     
+    def get_protocol_name(self, proto):
+        return self.PROTOCOLS.get(proto, f"Unknown({proto})")
+
     def analyze(self, packet):
-        """
-        Deep IPv4 analysis
-        Returns: dict with all header fields
-        """
+
         if not packet.haslayer('IP'):
             return None
         
@@ -29,6 +37,7 @@ class IPv4Analyzer:
         src_ip = ip.src
         dst_ip = ip.dst
         protocol = ip.proto
+        protocol_name = self.get_protocol_name(protocol)
         ttl = ip.ttl
         flags = ip.flags
         df = int(flags.DF)
@@ -46,6 +55,7 @@ class IPv4Analyzer:
             "src_ip": src_ip,
             "dst_ip": dst_ip,
             "protocol": protocol,
+            "protocol_name": protocol_name,
             "ttl": ttl,
             "identification": identification,
             "checksum": checksum,
@@ -57,8 +67,9 @@ class IPv4Analyzer:
     
     def is_fragmented(self, ip):
         flag_mf = int(ip.flags.MF)
+        flag_df = int(ip.flags.DF)
         fragment_offset = ip.frag
-        if flag_mf or fragment_offset > 0:
+        if flag_df and (flag_mf or fragment_offset > 0):
             return True
         else:
             return False

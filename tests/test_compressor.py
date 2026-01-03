@@ -1,4 +1,4 @@
-from ipv6_analyzer import IPv6Analyzer
+from src.analysis.ipv6_analyzer import IPv6Analyzer
 
 tests = [
     "2001:0db8:0000:0000:0000:ff00:0042:8329",

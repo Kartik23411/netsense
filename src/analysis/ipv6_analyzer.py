@@ -17,6 +17,7 @@ class IPv6Analyzer:
         payload_length = ipv6.plen
         
         return {
+            "version": 6,
             "src_ip": self.compress_address(src_ip),
             "dst_ip": self.compress_address(dst_ip),
             "next_header": next_header,
@@ -56,9 +57,14 @@ class IPv6Analyzer:
         compressed = ':'.join(blocks)
 
         # edge cases (:: at start or end)
-        if compressed.startswith(':'):
+        if compressed.startswith('::'):
+            pass
+        elif compressed.startswith(':'):
             compressed = ':' + compressed
-        if compressed.endswith(':'):
+
+        if compressed.endswith('::'):
+            pass
+        elif compressed.endswith(':') and not compressed.endswith('::'):
             compressed = compressed + ':'
 
         return compressed
