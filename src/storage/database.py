@@ -267,6 +267,37 @@ class NetSenseDB:
         packet_stats = dict(self.cursor.fetchone())
         stats['total_packets'] = packet_stats.get('total_packets', 0)
         stats['total_bytes'] = packet_stats.get('total_bytes', 0)
+
+        self.cursor.execute("""
+            SELECT ip_protocol, COUNT(*) as count FROM packets
+            WHERE ip_protocol IS NOT NULL
+            GROUP BY ip_protocol
+            ORDER BY count DESC;
+        """)
+        stats['protocol_distribution'] = {row['ip_protocol']: row['count'] for row in self.cursor.fetchall()}
+        
+        # TCP and UDP counts
+        self.cursor.execute("SELECT COUNT(*) as count FROM packets WHERE ip_protocol = 'TCP';")
+        stats['tcp_count'] = self.cursor.fetchone()[0] or 0
+        
+        self.cursor.execute("SELECT COUNT(*) as count FROM packets WHERE ip_protocol = 'UDP';")
+        stats['udp_count'] = self.cursor.fetchone()[0] or 0
+
+        # Active flows
+        self.cursor.execute("SELECT COUNT(*) as active_flows FROM flows WHERE state = 'ACTIVE';")
+        stats['active_flows'] = dict(self.cursor.fetchone())['active_flows']
+
+        # Top talkers
+        self.cursor.execute("""
+            SELECT src_ip, COUNT(*) as packet_count
+            FROM packets
+            WHERE src_ip IS NOT NULL
+            GROUP BY src_ip
+            ORDER BY packet_count DESC
+            LIMIT 5;
+        """)
+        stats['top_source_ips'] = [dict(row) for row in self.cursor.fetchall()]
+
         return stats
     
     def close(self):
@@ -289,7 +320,5 @@ if __name__ == "__main__":
     db.cursor.execute("SELECT name FROM sqlite_master WHERE type='index';")
     indexes = db.cursor.fetchall()
     print(f"✓ Indexes created: {[i[0] for i in indexes]}")
-
-    # 
     
     db.conn.close()
