@@ -18,6 +18,8 @@ from src.analysis.icmp_analyzer import ICMPAnalyzer
 from src.analysis.ipv4_analyzer import IPv4Analyzer
 from src.analysis.ipv6_analyzer import IPv6Analyzer
 from src.analysis.protocol_stats import ProtocolStatistics
+from src.analysis.dns_analyzer import DNSAnalyzer
+from src.analysis.http_analyzer import HTTPAnalyzer
 
 app = typer.Typer(help="Netsense - For making the internet to make more sense to you")
 console = Console()
@@ -28,6 +30,8 @@ arp_analyzer = ARPAnalyzer()
 icmp_analyzer = ICMPAnalyzer()
 ipv4_analyzer = IPv4Analyzer()
 ipv6_analyzer = IPv6Analyzer()
+http_analyzer = HTTPAnalyzer()
+dns_analyzer = DNSAnalyzer()
 stats_collector = ProtocolStatistics()
 
 @app.command()
@@ -35,9 +39,18 @@ def capture(
     count: int = typer.Option(10, "--count", "-c", help = "Number of packets to be captured"),
     interface: str = typer.Option(None, "--interface", "-i", help = "network interface whose packets to be captured"),
     filter: str = typer.Option(None, "--filter", "-f", help= "BPF filter"),
-    save: bool = typer.Option(True, "--save/--no-save", help = "SAve to the DB"),
+    save: bool = typer.Option(True, "--save/--no-save", help = "Save to the DB"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help= "To show the detailed packet information"),
 ):
+    """
+    Flags: 
+        -c/--count: for defining number of packets to be captured
+        -i/--interface: interface to be used
+        -f/--filter: bpf syntax filter
+        --save/--no-save: to save in the db or not
+        -v/--verbose: bool to show the detailed information
+"""
+
     console.print(f"[bold cyan] Starting the packet capture.... [/bold cyan]")
     console.print(f"Interface: {interface or 'default'}")
     console.print(f"Count: {count}")
@@ -170,6 +183,30 @@ def capture(
                 if verbose:
                     console.print(f"  [green]IPv6:[/green] {ipv6_info['src_ip']} → {ipv6_info['dst_ip']}")
         
+        # HTTP/HTTPS
+        if packet.haslayer('TCP') and (packet['TCP'].dport in [80, 443] or packet['TCP'].sport in [80, 443]):
+            http_info = http_analyzer.analyze(packet)
+            if http_info:
+                if verbose:
+                    if http_info['type'] == 'HTTP_REQUEST':
+                        console.print(f"    [cyan] HTTP {http_info['method']}: [/cyan]{http_info['full_url']}")
+                    elif http_info['type'] == 'HTTP_RESPONSE':
+                        console.print(f"    [cyan] HTTP {http_info['status_code']}: [/cyan]{http_info['status_text']}")
+                    elif http_info['type'] == 'TLS_HANDSHAKE':
+                        console.print(f"    [blue] HTTPS: [/blue] {http_info['handshake_type']} {http_info['tls_version']}")
+
+        # DNS
+        if packet.haslayer('DNS'):
+            dns_info = dns_analyzer.analyze(packet)
+            if dns_info and verbose:
+                if dns_info['type'] == 'DNS_QUERY':
+                    console.print(f"    [yellow] DNS Query: [/yellow] {dns_info['query_name']} {dns_info['query_type']}")
+                if dns_info['type'] == 'DNS_RESPONSE':
+                    status = dns_info['response_status']
+                    if dns_info['answers']:
+                        console.print(f"    [green] DNS Response:[/green] {status} - {len(dns_info['answers'])} answers")
+                    else:
+                        console.print(f"    [red] DNS Response:[/red] {status}")
 
         if save and 'src_mac' in packet_data:
             try:
@@ -209,6 +246,10 @@ def capture(
 def stats(
     last: int = typer.Option(None, "--last", help="to show last N packets"),
 ):
+    """
+    Flags:
+        --last:; to define the N packets
+"""
     console.print("[bold cyan] NetSense Database Statistics[/bold cyan]\n")
     db_stats = db.get_statistics()
     
@@ -288,9 +329,11 @@ def query(
     limit: int = typer.Option(10, "--limit", "-l", help="number of results"),    
 ):
     """
-    netsense query --src 192.168.1.100\n
-    netsense query --protocol TCP --limit 50\n
-    netsense query --src 192.168.1.1 --dst 8.8.8.8
+    Flags:
+        --src: source ip
+        --dst: dstination ip
+        --protocol/-p: TCP/UDP/ICMP
+        --limit/-l: number of result
 """
     console.print("[bold cyan]Querying database...[/bold cyan]\n")
     
@@ -457,6 +500,27 @@ def show_stats():
     console.print(f"  IPv6: {summary['ipv6']['total']}")
     console.print(f"  ARP: {summary['arp']['requests'] + summary['arp']['replies']}")
     console.print(f"  ICMP: {summary['icmp']['total']}")
+
+    http_stats = http_analyzer.get_statistics()
+    if http_stats['http_requests'] > 0 or http_stats['https_connections'] > 0:
+        console.print(f"\n[bold] Application Layer:[/bold]")
+        console.print(f"  HTTP Requests: [cyan]{http_stats['http_requests']}[/cyan]")
+        console.print(f"  HTTP Responses: [cyan]{http_stats['http_responses']}[/cyan]")
+        console.print(f"  HTTPS Connections: [blue]{http_stats['https_connections']}[/blue]")
+        console.print(f"  TLS Handshakes: [blue]{http_stats['tls_handshakes']}[/blue]")
+    
+    # Add DNS stats
+    dns_stats = dns_analyzer.get_statistics()
+    if dns_stats['total_queries'] > 0:
+        console.print(f"\n[bold] DNS Activity:[/bold]")
+        console.print(f"  Total Queries: [yellow]{dns_stats['total_queries']}[/yellow]")
+        console.print(f"  Resolved: [green]{dns_stats['resolved_queries']}[/green]")
+        console.print(f"  Avg Resolution Time: [green]{dns_stats['avg_resolution_time']*1000:.1f}ms[/green]")
+        
+        if dns_stats['top_domains']:
+            console.print(f"  Top Domains: [dim]{', '.join([d[0] for d in dns_stats['top_domains'][:3]])}[/dim]")
+
+
 
 if __name__ == "__main__":
     app()
