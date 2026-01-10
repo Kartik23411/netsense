@@ -429,7 +429,7 @@ def analyze(
     save: bool = typer.Option(True, "--save/--no-save", help="Save to database"),
 ):
     """
-        netsense analyze capture.pcap\n
+        netsense analyze capture.pcap
         netsense analyze traffic.pcap --no-save
     """
     console.print(f"[bold cyan]Analyzing {file}...[/bold cyan]\n")
