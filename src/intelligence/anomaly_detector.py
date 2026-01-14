@@ -1,3 +1,4 @@
+from pyexpat import features
 import numpy as np
 from sklearn.ensemble import IsolationForest
 import joblib
@@ -116,9 +117,21 @@ class AnomalyDetector:
         # Get anomaly score (lower = more anomalous)
         score = self.model.score_samples(X)[0]
         
+
+        # ADD THIS DEBUG LINE:
+        print(f"DEBUG SCORE: Raw score = {score}, After formula = {(score + 0.5) * 2}")
+
         # Convert to confidence (-0.5 - 0.5 scale) to %
-        confidence = max(0.0, min(1.0, (score + 0.5) * 2 ))
-        
+        # confidence = max(0.0, min(1.0, (score + 0.5) * 2 ))
+        if score >= 0:
+            confidence = 1.0  # Very normal
+        elif score <= -0.7:
+            confidence = 0.0  # Very anomalous
+        else:
+            # Linear mapping: -0.7 → 0%, 0 → 100%
+            confidence = (score + 0.7) / 0.7
+            
+        print(f"DEBUG CONFIDENCE: {confidence}")
         return {
             'is_anomaly': prediction == -1,
             'anomaly_score': score,
@@ -249,7 +262,7 @@ class AnomalyDetector:
         """
         normalized = features.copy()
 
-        normalized[0] = min(features[0] / 65536.0, 1.0) # packet size
+        normalized[0] = min(features[0] / 65535.0, 1.0) # packet size
         normalized[1] = min(features[1] / 65535.0, 1.0) # ports
         normalized[2] = features[2] / 3.0 # protocol (0-3)
         normalized[3] = features[3] / 255.0 # ttl

@@ -82,6 +82,17 @@ class NetSenseDB:
                 total_bytes INTEGER DEFAULT 0,
                 packet_count INTEGER DEFAULT 0,
                 
+                -- ML features for the phase 2 detection using the flow analysis
+                fwd_packet_count INTEGER DEFAULT 0,        
+                bwd_packet_count INTEGER DEFAULT 0,        
+                fwd_bytes INTEGER DEFAULT 0,               
+                bwd_bytes INTEGER DEFAULT 0,               
+                syn_count INTEGER DEFAULT 0,               
+                psh_count INTEGER DEFAULT 0,               
+                ack_count INTEGER DEFAULT 0,               
+                fin_count INTEGER DEFAULT 0,               
+                rst_count INTEGER DEFAULT 0,                    
+                        
                 -- Application layer
                 application TEXT,  -- e.g., "HTTPS", "DNS", "SSH"
                 
