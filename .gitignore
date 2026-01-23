@@ -28,12 +28,12 @@ share/python-wheels/
 *.egg
 MANIFEST
 
-
 output.json
 netsense.db
 ouidb.txt
 
 models/
+myenv/
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
