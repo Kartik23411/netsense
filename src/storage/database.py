@@ -83,16 +83,50 @@ class NetSenseDB:
                 packet_count INTEGER DEFAULT 0,
                 
                 -- ML features for the phase 2 detection using the flow analysis
-                fwd_packet_count INTEGER DEFAULT 0,        
-                bwd_packet_count INTEGER DEFAULT 0,        
-                fwd_bytes INTEGER DEFAULT 0,               
-                bwd_bytes INTEGER DEFAULT 0,               
-                syn_count INTEGER DEFAULT 0,               
-                psh_count INTEGER DEFAULT 0,               
-                ack_count INTEGER DEFAULT 0,               
-                fin_count INTEGER DEFAULT 0,               
-                rst_count INTEGER DEFAULT 0,                    
-                        
+                            
+                --packet direction tracking
+                fwd_packet_count INTEGER DEFAULT 0,
+                bwd_packet_count INTEGER DEFAULT 0,
+                fwd_bytes INTEGER DEFAULT 0,
+                bwd_bytes INTEGER DEFAULT 0,
+
+                -- TCP flags
+                syn_count INTEGER DEFAULT 0,
+                psh_count INTEGER DEFAULT 0,
+                ack_count INTEGER DEFAULT 0,
+                fin_count INTEGER DEFAULT 0,
+                rst_count INTEGER DEFAULT 0,
+
+                -- TCP window sizes
+                init_win_bytes_forward INTEGER DEFAULT 0,
+                init_win_bytes_backward INTEGER DEFAULT 0,
+
+                -- Packet length statistics
+                fwd_pkt_len_sum REAL DEFAULT 0,
+                fwd_pkt_len_sum_sq REAL DEFAULT 0,  -- For std calculation
+                bwd_pkt_len_sum REAL DEFAULT 0,
+                bwd_pkt_len_sum_sq REAL DEFAULT 0,
+
+                -- inter-arrival time tracking
+                last_fwd_packet_time REAL,
+                last_bwd_packet_time REAL,
+                fwd_iat_sum REAL DEFAULT 0,
+                fwd_iat_sum_sq REAL DEFAULT 0,
+                fwd_iat_min REAL,
+                bwd_iat_sum REAL DEFAULT 0,
+                bwd_iat_sum_sq REAL DEFAULT 0,
+                bwd_iat_min REAL,
+                flow_iat_sum REAL DEFAULT 0,
+                flow_iat_sum_sq REAL DEFAULT 0,
+                flow_iat_min REAL,
+                            
+                -- Add active/idle time tracking
+                last_packet_time REAL,
+                active_time_sum REAL DEFAULT 0,
+                active_count INTEGER DEFAULT 0,
+                idle_time_sum REAL DEFAULT 0,
+                idle_count INTEGER DEFAULT 0,    
+                                                   
                 -- Application layer
                 application TEXT,  -- e.g., "HTTPS", "DNS", "SSH"
                 
@@ -212,24 +246,118 @@ class NetSenseDB:
         self.cursor.execute(insert_query, (src_ip, dst_ip, src_port, dst_port, protocol, datetime.now().timestamp()))
         self.conn.commit()
         return self.cursor.lastrowid
+
+    def update_flow(self, flow_id, packet_data, packet_time):        
+
+        flow = self.get_flow_by_id(flow_id)
     
-    def update_flow(self, flow_id, packet_data):
-        query = """
-            UPDATE flows
-            SET end_time = ?, duration = ?, total_bytes = total_bytes + ?, packet_count = packet_count + 1
-            WHERE id = ?;
-        """
-        end_time = datetime.now().timestamp()
-        duration = end_time - packet_data['timestamp']
+        # Determine direction
+        is_forward = (packet_data['src_ip'] == flow['src_ip'])
+        packet_len = packet_data.get('packet_size', 0)
         
-        self.cursor.execute(query, (
-            end_time,
-            duration,
-            packet_data.get('packet_size', 0),
-            flow_id
-        ))
+        # Update packet counts and related stats
+        if is_forward:
+            self.cursor.execute("UPDATE flows SET fwd_packet_count = fwd_packet_count + 1, fwd_bytes = fwd_bytes + ? WHERE id = ?", 
+                            (packet_len, flow_id))
+            
+            # Track packet length stats
+            self.cursor.execute("UPDATE flows SET fwd_pkt_len_sum = fwd_pkt_len_sum + ?, fwd_pkt_len_sum_sq = fwd_pkt_len_sum_sq + ? WHERE id = ?", 
+                            (packet_len, packet_len**2, flow_id))
+            
+            # Track IAT
+            if flow['last_fwd_packet_time']:
+                iat = packet_time - flow['last_fwd_packet_time']
+                self.cursor.execute("UPDATE flows SET fwd_iat_sum = fwd_iat_sum + ?, fwd_iat_sum_sq = fwd_iat_sum_sq + ? WHERE id = ?", 
+                                (iat, iat**2, flow_id))
+                
+                # Update min IAT
+                if flow['fwd_iat_min'] is None or iat < flow['fwd_iat_min']:
+                    self.cursor.execute("UPDATE flows SET fwd_iat_min = ? WHERE id = ?", (iat, flow_id))
+            
+            self.cursor.execute("UPDATE flows SET last_fwd_packet_time = ? WHERE id = ?", (packet_time, flow_id))
+        else:
+            # Backward direction
+            self.cursor.execute("UPDATE flows SET bwd_packet_count = bwd_packet_count + 1, bwd_bytes = bwd_bytes + ? WHERE id = ?", 
+                            (packet_len, flow_id))
+            
+            # Track packet length stats
+            self.cursor.execute("UPDATE flows SET bwd_pkt_len_sum = bwd_pkt_len_sum + ?, bwd_pkt_len_sum_sq = bwd_pkt_len_sum_sq + ? WHERE id = ?", 
+                            (packet_len, packet_len**2, flow_id))
+            
+            # Track IAT
+            if flow['last_bwd_packet_time']:
+                iat = packet_time - flow['last_bwd_packet_time']
+                self.cursor.execute("UPDATE flows SET bwd_iat_sum = bwd_iat_sum + ?, bwd_iat_sum_sq = bwd_iat_sum_sq + ? WHERE id = ?", 
+                                (iat, iat**2, flow_id))
+                
+                # Update min IAT
+                if flow['bwd_iat_min'] is None or iat < flow['bwd_iat_min']:
+                    self.cursor.execute("UPDATE flows SET bwd_iat_min = ? WHERE id = ?", (iat, flow_id))
+            
+            self.cursor.execute("UPDATE flows SET last_bwd_packet_time = ? WHERE id = ?", (packet_time, flow_id))
+        
+        # Track TCP flags
+        tcp_flags = packet_data.get('tcp_flags', '')
+        if 'S' in tcp_flags:
+            self.cursor.execute("UPDATE flows SET syn_count = syn_count + 1 WHERE id = ?", (flow_id,))
+        if 'P' in tcp_flags:
+            self.cursor.execute("UPDATE flows SET psh_count = psh_count + 1 WHERE id = ?", (flow_id,))
+        if 'A' in tcp_flags:
+            self.cursor.execute("UPDATE flows SET ack_count = ack_count + 1 WHERE id = ?", (flow_id,))
+        if 'F' in tcp_flags:
+            self.cursor.execute("UPDATE flows SET fin_count = fin_count + 1 WHERE id = ?", (flow_id,))
+        if 'R' in tcp_flags:
+            self.cursor.execute("UPDATE flows SET rst_count = rst_count + 1 WHERE id = ?", (flow_id,))
+        
+        # Track initial window size (first packet only)
+        if flow['packet_count'] == 0 and packet_data.get('tcp_window'):
+            if is_forward:
+                self.cursor.execute("UPDATE flows SET init_win_bytes_forward = ? WHERE id = ?", 
+                                (packet_data['tcp_window'], flow_id))
+            else:
+                self.cursor.execute("UPDATE flows SET init_win_bytes_backward = ? WHERE id = ?", 
+                                (packet_data['tcp_window'], flow_id))
+        
+        # Update flow-level IAT
+        if flow['last_packet_time']:
+            flow_iat = packet_time - flow['last_packet_time']
+            self.cursor.execute("UPDATE flows SET flow_iat_sum = flow_iat_sum + ?, flow_iat_sum_sq = flow_iat_sum_sq + ? WHERE id = ?", 
+                            (flow_iat, flow_iat**2, flow_id))
+            
+            if flow['flow_iat_min'] is None or flow_iat < flow['flow_iat_min']:
+                self.cursor.execute("UPDATE flows SET flow_iat_min = ? WHERE id = ?", (flow_iat, flow_id))
+        
+        # Track active/idle time
+        if flow['last_packet_time']:
+            time_gap = packet_time - flow['last_packet_time']
+            # Defined threshold for active vs idle
+            active_threshold = 1.0
+            
+            if time_gap < active_threshold:     # Active period
+                self.cursor.execute("UPDATE flows SET active_time_sum = active_time_sum + ?, active_count = active_count + 1 WHERE id = ?", 
+                                (time_gap, flow_id))
+            else:
+                # Idle period
+                self.cursor.execute("UPDATE flows SET idle_time_sum = idle_time_sum + ?, idle_count = idle_count + 1 WHERE id = ?", 
+                                (time_gap, flow_id))
+        
+        self.cursor.execute("UPDATE flows SET last_packet_time = ? WHERE id = ?", (packet_time, flow_id))
+        
+        # Update basic flow stats (total_bytes, packet_count, end_time, duration)
+        duration = packet_time - flow['start_time']
+
+        self.cursor.execute("UPDATE flows SET packet_count = packet_count + 1, total_bytes = total_bytes + ?, end_time = ?, duration = ? WHERE id = ?", 
+                        (packet_len, packet_time, duration, flow_id))
+        
         self.conn.commit()
     
+    def get_flow_by_id(self, flow_id):
+        query = "SELECT * FROM flows WHERE id = ?"
+        self.cursor.execute(query, (flow_id,))
+        result = self.cursor.fetchone()
+        return dict(result) if result else None
+
+
     def get_packets(self, limit=100, filters=None):
         query = "SELECT * FROM packets WHERE 1=1"
         params = []
@@ -315,7 +443,82 @@ class NetSenseDB:
         if self.conn: 
             self.conn.close()
             print("DB Closed")
-  
+    
+    def get_ml_features(self, flow_id):
+        
+        flow = self.get_flow_by_id(flow_id)
+        
+        # Calculate derived features
+        duration = max(flow['duration'], 0.001)
+        
+        # Calculate std deviations
+        fwd_pkt_len_std = self._calculate_std(
+            flow['fwd_pkt_len_sum'],
+            flow['fwd_pkt_len_sum_sq'],
+            flow['fwd_packet_count']
+        )
+        
+        bwd_pkt_len_std = self._calculate_std(
+            flow['bwd_pkt_len_sum'],
+            flow['bwd_pkt_len_sum_sq'],
+            flow['bwd_packet_count']
+        )
+        
+        # Calculate IAT statistics
+        flow_iat_mean = flow['flow_iat_sum'] / max(flow['packet_count'] - 1, 1)
+        flow_iat_std = self._calculate_std(
+            flow['flow_iat_sum'],
+            flow['flow_iat_sum_sq'],
+            flow['packet_count'] - 1
+        )
+        
+        fwd_iat_std = self._calculate_std(
+            flow['fwd_iat_sum'],
+            flow['fwd_iat_sum_sq'],
+            flow['fwd_packet_count'] - 1
+        )
+
+        bwd_iat_std = self._calculate_std(
+            flow['bwd_iat_sum'],
+            flow['bwd_iat_sum_sq'],
+            flow['bwd_packet_count'] - 1
+        )
+        
+        return {
+            # PortScan features
+            'Init_Win_bytes_forward': flow['init_win_bytes_forward'],
+            'Bwd Packets/s': flow['bwd_packet_count'] / duration,
+            'PSH Flag Count': flow['psh_count'],
+            
+            # DDoS features
+            'Bwd Packet Length Std': bwd_pkt_len_std,
+            'Average Packet Size': flow['total_bytes'] / max(flow['packet_count'], 1),
+            'Flow Duration': duration,
+            'Flow IAT Std': flow_iat_std,
+            
+            # DoS Hulk features (subset of DDoS)
+            
+            # DoS Slowhttp features
+            'Active Min': flow['active_time_sum'] / max(flow['active_count'], 1),  # Simplified
+            'Active Mean': flow['active_time_sum'] / max(flow['active_count'], 1),
+            
+            # DoS GoldenEye features
+            'Flow IAT Min': flow['flow_iat_min'] or 0,
+            'Fwd IAT Min': flow['fwd_iat_min'] or 0,
+            'Flow IAT Mean': flow_iat_mean,
+            
+            # DoS Slowloris features
+            'Fwd IAT Mean': flow['fwd_iat_sum'] / max(flow['fwd_packet_count'] - 1, 1),
+            'Bwd IAT Mean': flow['bwd_iat_sum'] / max(flow['bwd_packet_count'] - 1, 1),
+        }
+
+    # to calculate standard deviation
+    def _calculate_std(self, sum_val, sum_sq, count):
+        if count <= 1:
+            return 0
+        mean = sum_val / count
+        variance = (sum_sq / count) - (mean ** 2)
+        return max(variance, 0) ** 0.5  
 
 
 if __name__ == "__main__":
