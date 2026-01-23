@@ -20,6 +20,7 @@ from src.analysis.ipv6_analyzer import IPv6Analyzer
 from src.analysis.protocol_stats import ProtocolStatistics
 from src.analysis.dns_analyzer import DNSAnalyzer
 from src.analysis.http_analyzer import HTTPAnalyzer
+from src.intelligence.ml_detector import MLDetector
 
 app = typer.Typer(help="Netsense - For making the internet to make more sense to you")
 console = Console()
@@ -33,6 +34,7 @@ ipv6_analyzer = IPv6Analyzer()
 http_analyzer = HTTPAnalyzer()
 dns_analyzer = DNSAnalyzer()
 stats_collector = ProtocolStatistics()
+ml_detector = MLDetector()
 
 @app.command()
 def capture(
@@ -215,6 +217,38 @@ def capture(
                 if verbose:
                     console.print(f"[red]DB Error: {e}[/red]")
 
+        flow_id = db.get_flow_id(
+            packet_data['src_ip'],
+            packet_data['dst_ip'],
+            packet_data['src_port'],
+            packet_data['dst_port'],
+            packet_data['ip_protocol']
+        )
+        db.update_flow(flow_id, packet_data, packet.time)
+
+        flow = db.get_flow_by_id(flow_id)
+
+        if should_run_ml_detection(flow):
+            flow_features = db.get_ml_features(flow_id)
+            
+            # Run ML detection
+            ml_alerts = ml_detector.analyze_flow(flow_features)
+            
+            for alert in ml_alerts:
+                console.print(f"[red]🔴 ATTACK CONFIRMED: {alert['type']}[/red]")
+                console.print(f"   Confidence: {alert['confidence']:.0%}")
+                console.print(f"   Severity: {alert['severity']}")
+                
+                # Store alert in database
+                db.insert_alert({
+                    'timestamp': packet.time,
+                    'severity': alert['severity'],
+                    'alert_type': alert['attack_type'],
+                    'description': f"{alert['type']} detected with {alert['confidence']:.0%} confidence",
+                    'src_ip': flow['src_ip'],
+                    'dst_ip': flow['dst_ip'],
+                    'related_flow_id': flow_id
+                })
 
     try:
         sniff(
@@ -520,7 +554,12 @@ def show_stats():
         if dns_stats['top_domains']:
             console.print(f"  Top Domains: [dim]{', '.join([d[0] for d in dns_stats['top_domains'][:3]])}[/dim]")
 
-
+def should_run_ml_detection(flow):
+    return (
+        flow['packet_count'] >= 10 or
+        flow['state'] == 'CLOSED' or
+        (time.time() - flow.get('last_packet_time', 0) > 60)
+    )
 
 if __name__ == "__main__":
     app()

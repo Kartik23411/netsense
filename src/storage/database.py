@@ -251,8 +251,15 @@ class NetSenseDB:
 
         flow = self.get_flow_by_id(flow_id)
     
-        # Determine direction
-        is_forward = (packet_data['src_ip'] == flow['src_ip'])
+        # Determine directionis_forward = (
+        is_forward = (
+            packet_data['src_ip'] == flow['src_ip'] and
+            packet_data.get('src_port') == flow['src_port']
+        )
+        
+        # For UDP flows without ports, use IP only
+        if packet_data.get('protocol') == 'UDP' and not packet_data.get('src_port'):
+            is_forward = (packet_data['src_ip'] == flow['src_i '])
         packet_len = packet_data.get('packet_size', 0)
         
         # Update packet counts and related stats
@@ -349,14 +356,18 @@ class NetSenseDB:
         self.cursor.execute("UPDATE flows SET packet_count = packet_count + 1, total_bytes = total_bytes + ?, end_time = ?, duration = ? WHERE id = ?", 
                         (packet_len, packet_time, duration, flow_id))
         
-        self.conn.commit()
+        # commit the n packets or when the flow ends
+        self.packet_counter = getattr(self, 'packet_counter', 0) + 1
+        if packet_data.get('tcp_flags') and ('F' in packet_data['tcp_flags'] or 'R' in packet_data['tcp_flags']):
+            self.conn.commit()  
+        elif self.packet_counter % 100 == 0:
+            self.conn.commit()  
     
     def get_flow_by_id(self, flow_id):
         query = "SELECT * FROM flows WHERE id = ?"
         self.cursor.execute(query, (flow_id,))
         result = self.cursor.fetchone()
         return dict(result) if result else None
-
 
     def get_packets(self, limit=100, filters=None):
         query = "SELECT * FROM packets WHERE 1=1"
@@ -445,72 +456,76 @@ class NetSenseDB:
             print("DB Closed")
     
     def get_ml_features(self, flow_id):
-        
-        flow = self.get_flow_by_id(flow_id)
-        
-        # Calculate derived features
-        duration = max(flow['duration'], 0.001)
-        
-        # Calculate std deviations
-        fwd_pkt_len_std = self._calculate_std(
-            flow['fwd_pkt_len_sum'],
-            flow['fwd_pkt_len_sum_sq'],
-            flow['fwd_packet_count']
-        )
-        
-        bwd_pkt_len_std = self._calculate_std(
-            flow['bwd_pkt_len_sum'],
-            flow['bwd_pkt_len_sum_sq'],
-            flow['bwd_packet_count']
-        )
-        
-        # Calculate IAT statistics
-        flow_iat_mean = flow['flow_iat_sum'] / max(flow['packet_count'] - 1, 1)
-        flow_iat_std = self._calculate_std(
-            flow['flow_iat_sum'],
-            flow['flow_iat_sum_sq'],
-            flow['packet_count'] - 1
-        )
-        
-        fwd_iat_std = self._calculate_std(
-            flow['fwd_iat_sum'],
-            flow['fwd_iat_sum_sq'],
-            flow['fwd_packet_count'] - 1
-        )
+        try:
+            flow = self.get_flow_by_id(flow_id)
+            
+            # Calculate derived features
+            duration = max(flow['duration'], 0.001)
+            
+            # Calculate std deviations
+            fwd_pkt_len_std = self._calculate_std(
+                flow['fwd_pkt_len_sum'],
+                flow['fwd_pkt_len_sum_sq'],
+                flow['fwd_packet_count']
+            )
+            
+            bwd_pkt_len_std = self._calculate_std(
+                flow['bwd_pkt_len_sum'],
+                flow['bwd_pkt_len_sum_sq'],
+                flow['bwd_packet_count']
+            )
+            
+            # Calculate IAT statistics
+            flow_iat_mean = flow['flow_iat_sum'] / max(flow['packet_count'] - 1, 1)
+            flow_iat_std = self._calculate_std(
+                flow['flow_iat_sum'],
+                flow['flow_iat_sum_sq'],
+                flow['packet_count'] - 1
+            )
+            
+            fwd_iat_std = self._calculate_std(
+                flow['fwd_iat_sum'],
+                flow['fwd_iat_sum_sq'],
+                flow['fwd_packet_count'] - 1
+            )
 
-        bwd_iat_std = self._calculate_std(
-            flow['bwd_iat_sum'],
-            flow['bwd_iat_sum_sq'],
-            flow['bwd_packet_count'] - 1
-        )
+            bwd_iat_std = self._calculate_std(
+                flow['bwd_iat_sum'],
+                flow['bwd_iat_sum_sq'],
+                flow['bwd_packet_count'] - 1
+            )
+            
+            return {
+                # PortScan features
+                'Init_Win_bytes_forward': flow['init_win_bytes_forward'],
+                'Bwd Packets/s': flow['bwd_packet_count'] / duration,
+                'PSH Flag Count': flow['psh_count'],
+                
+                # DDoS features
+                'Bwd Packet Length Std': bwd_pkt_len_std,
+                'Average Packet Size': flow['total_bytes'] / max(flow['packet_count'], 1),
+                'Flow Duration': duration,
+                'Flow IAT Std': flow_iat_std,
+                
+                # DoS Hulk features (subset of DDoS)
+                
+                # DoS Slowhttp features
+                'Active Min': flow['active_time_sum'] / max(flow['active_count'], 1),  # Simplified
+                'Active Mean': flow['active_time_sum'] / max(flow['active_count'], 1),
+                
+                # DoS GoldenEye features
+                'Flow IAT Min': flow['flow_iat_min'] or 0,
+                'Fwd IAT Min': flow['fwd_iat_min'] or 0,
+                'Flow IAT Mean': flow_iat_mean,
+                
+                # DoS Slowloris features
+                'Fwd IAT Mean': flow['fwd_iat_sum'] / max(flow['fwd_packet_count'] - 1, 1),
+                'Bwd IAT Mean': flow['bwd_iat_sum'] / max(flow['bwd_packet_count'] - 1, 1),
+            }
         
-        return {
-            # PortScan features
-            'Init_Win_bytes_forward': flow['init_win_bytes_forward'],
-            'Bwd Packets/s': flow['bwd_packet_count'] / duration,
-            'PSH Flag Count': flow['psh_count'],
-            
-            # DDoS features
-            'Bwd Packet Length Std': bwd_pkt_len_std,
-            'Average Packet Size': flow['total_bytes'] / max(flow['packet_count'], 1),
-            'Flow Duration': duration,
-            'Flow IAT Std': flow_iat_std,
-            
-            # DoS Hulk features (subset of DDoS)
-            
-            # DoS Slowhttp features
-            'Active Min': flow['active_time_sum'] / max(flow['active_count'], 1),  # Simplified
-            'Active Mean': flow['active_time_sum'] / max(flow['active_count'], 1),
-            
-            # DoS GoldenEye features
-            'Flow IAT Min': flow['flow_iat_min'] or 0,
-            'Fwd IAT Min': flow['fwd_iat_min'] or 0,
-            'Flow IAT Mean': flow_iat_mean,
-            
-            # DoS Slowloris features
-            'Fwd IAT Mean': flow['fwd_iat_sum'] / max(flow['fwd_packet_count'] - 1, 1),
-            'Bwd IAT Mean': flow['bwd_iat_sum'] / max(flow['bwd_packet_count'] - 1, 1),
-        }
+        except Exception as e:
+            print(f"Error extracting features for flow {flow_id}: {e}")
+            return {feat: 0 for feat in self.get_all_feature_names()}
 
     # to calculate standard deviation
     def _calculate_std(self, sum_val, sum_sq, count):
