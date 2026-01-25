@@ -4,6 +4,16 @@ from pathlib import Path
 
 class MLDetector:
 
+    # adding confidence thresholds for each attack type to reduce false positives
+    CONFIDENCE_THRESHOLDS = {
+        'portscan': 0.85,       # High confidence - port scans are distinctive
+        'ddos': 0.75,           # Moderate - clear volume pattern
+        'dos_hulk': 0.80,       # Moderate-high
+        'dos_slowloris': 0.90,  # Very high - subtle attack, needs strong signal
+        'dos_slowhttp': 0.90,   # Very high - very subtle
+        'dos_goldeneye': 0.85   # High
+    }
+
     def __init__(self, models_dir='models'):
         self.models_dir = Path(models_dir)
         self.detectors = {}
@@ -16,6 +26,7 @@ class MLDetector:
         self._load_detector('dos_goldeneye')
 
         print(f"Loaded detectors: {list(self.detectors.keys())}")
+        print(f"Confidence thresholds: {self.CONFIDENCE_THRESHOLDS}")
 
     def _load_detector(self, attack_type):
         try:
@@ -27,7 +38,8 @@ class MLDetector:
                 'model': joblib.load(model_path),
                 'scaler': joblib.load(scaler_path),
                 'features': self._load_features(features_path),
-                'name': attack_type.replace('_', ' ').title()
+                'name': attack_type.replace('_', ' ').title(),
+                'threshold': self.CONFIDENCE_THRESHOLDS.get(attack_type, 0.8)
             }
         except Exception as e:
             print(f"Failed to load detector for {attack_type}: {e}")
@@ -49,21 +61,39 @@ class MLDetector:
                     proba = detector['model'].predict_proba(X_scaled)[0]
                     confidence = proba[1]
 
-                    results.append({
-                        'type': detector['name'],
-                        'attack_type': attack_type,
-                        'confidence': confidence,
-                        'severity': self._get_severity(attack_type)
-                    })
+                    threshold = detector['threshold']
+
+                    if confidence >= threshold:
+                        results.append({
+                            'type': detector['name'],
+                            'attack_type': attack_type,
+                            'confidence': confidence,
+                            'severity': self._get_severity(attack_type)
+                        })
+
+                    # for the developer: log near-misses for tuning
+                    elif confidence >= threshold - 0.1:
+                        # print(f"  Near-miss: {attack_type} at {confidence:.1%} (threshold: {threshold:.1%})")
+                        pass
 
             except Exception as e:
                 print(f"Error analyzing flow for {attack_type}: {e}")
+                import traceback
+                traceback.print_exc()
                 continue
 
         return sorted(results, key=lambda x: x['confidence'], reverse=True)
 
     def _prepare_features(self, flow_features, required_features):
-        values = [flow_features.get(feat, 0) for feat in required_features]
+        values = []
+        
+        for feat in required_features:
+            value = flow_features.get(feat, 0)
+            # value validation
+            if value is None or np.isnan(value) or np.isinf(value):
+                value = 0
+
+            values.append(value)
 
         import pandas as pd
         return pd.DataFrame([values], columns=required_features)
@@ -81,3 +111,5 @@ class MLDetector:
 
 if __name__ == "__main__":
     detector = MLDetector()
+    print(f"\n Detector ready with {len(detector.detectors)} models")
+    print(f" Statistics: {detector.get_statistics()}")
