@@ -19,7 +19,7 @@ class MLDetector:
 
     def _load_detector(self, attack_type):
         try:
-            model_path = self.models_dir / f"{attack_type}_model.pkl"
+            model_path = self.models_dir / f"{attack_type}_detector.pkl"
             scaler_path = self.models_dir / f"{attack_type}_scaler.pkl" 
             features_path = self.models_dir / f"{attack_type}_features.txt"
 
@@ -42,7 +42,7 @@ class MLDetector:
         for attack_type, detector in self.detectors.items():
             try:
                 X = self._prepare_features(flow_features, detector['features'])
-                X_scaled = detector['scaler'].transform(X.reshape(1, -1))
+                X_scaled = detector['scaler'].transform(X)
                 prediction = detector['model'].predict(X_scaled)[0]
 
                 if prediction == 1:
@@ -63,7 +63,10 @@ class MLDetector:
         return sorted(results, key=lambda x: x['confidence'], reverse=True)
 
     def _prepare_features(self, flow_features, required_features):
-        return np.array([flow_features.get(feat, 0) for feat in required_features])
+        values = [flow_features.get(feat, 0) for feat in required_features]
+
+        import pandas as pd
+        return pd.DataFrame([values], columns=required_features)
 
     def _get_severity(self, attack_type):
         severity_map = {
